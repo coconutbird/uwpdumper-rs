@@ -1,0 +1,15 @@
+[package]
+name = "uwpdumper-payload"
+description = "UWPDumper DLL - injected into UWP processes to dump files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rayon = "1.11.0"
+thiserror = "2.0.18"
+uwpdumper-shared = { workspace = true }
+windows = { workspace = true }

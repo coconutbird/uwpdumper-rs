@@ -1,0 +1,19 @@
+[package]
+name = "uwpdumper-cli"
+description = "UWPDumper CLI - injects DLL and displays output"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "uwpdumper"
+path = "src/main.rs"
+
+[dependencies]
+uwpdumper-shared = { workspace = true }
+windows = { workspace = true }
+colored = { workspace = true }
+clap = { version = "4.5.56", features = ["derive"] }
+walkdir = "2.5.0"
+rayon = "1.11.0"
+
