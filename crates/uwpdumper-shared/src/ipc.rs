@@ -159,6 +159,10 @@ impl IpcHost {
                 PCWSTR(name_wide.as_ptr()),
             );
 
+            // Check for ERROR_ALREADY_EXISTS immediately after CreateFileMappingW
+            // (before any other calls that might change GetLastError)
+            let already_exists = GetLastError() == ERROR_ALREADY_EXISTS;
+
             // Clean up security resources
             let _ = LocalFree(Some(std::mem::transmute::<*mut ACL, HLOCAL>(acl)));
             let _ = LocalFree(Some(std::mem::transmute::<PSID, HLOCAL>(sid_uwp)));
@@ -167,7 +171,7 @@ impl IpcHost {
             let handle = handle?;
 
             // Check if the mapping already existed (indicates duplicate dump attempt)
-            if GetLastError() == ERROR_ALREADY_EXISTS {
+            if already_exists {
                 CloseHandle(handle)?;
                 return Err(Error::new(
                     HRESULT(ERROR_ALREADY_EXISTS.0 as i32),
@@ -523,6 +527,26 @@ mod tests {
         let pid = unique_pid();
         let result = IpcClient::open(pid);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_ipc_host_duplicate_fails() {
+        let pid = unique_pid();
+        let _host1 = IpcHost::create(pid).expect("Failed to create first IPC host");
+
+        // Second create should fail with ERROR_ALREADY_EXISTS
+        let result = IpcHost::create(pid);
+        match result {
+            Ok(_) => panic!("Second IpcHost::create should have failed"),
+            Err(err) => {
+                // Check that the error message mentions the duplicate session
+                assert!(
+                    err.message().contains("already exists"),
+                    "Error should mention 'already exists': {}",
+                    err.message()
+                );
+            }
+        }
     }
 
     #[tokio::test]
