@@ -59,7 +59,7 @@ jobs:
 
       - name: Create zip
         run: |
-          Compress-Archive -Path target/release/uwpdumper.exe, target/release/uwpdumper_payload.dll -DestinationPath uwpdumper-rs-${{ steps.tag.outputs.tag }}.zip
+          Compress-Archive -Path target/release/uwpdumper.exe, target/release/uwpdumper_payload.dll -DestinationPath uwpdumper-${{ steps.tag.outputs.tag }}.zip
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
