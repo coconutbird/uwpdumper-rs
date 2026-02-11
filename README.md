@@ -30,7 +30,7 @@ UWP applications (including Xbox Game Pass games) run in a sandboxed environment
 1. **Download** the [latest release](https://github.com/coconutbird/uwpdumper-rs/releases/latest) and extract
 2. **Find your game's package name**: `uwpdumper --list`
 3. **Dump the package**: `uwpdumper --package YourGame`
-4. **Find your files** in: `%LOCALAPPDATA%\Packages\<PackageFamilyName>\TempState\DUMP\`
+4. **Find your files** in: `%LOCALAPPDATA%\Packages\<PackageFamilyName>\AC\TempState\DUMP\`
 
 ## Installation
 
@@ -94,12 +94,12 @@ uwpdumper --package HaloWars --output C:\Dumps\HaloWars
 By default, files are dumped to:
 
 ```
-%LOCALAPPDATA%\Packages\<PackageFamilyName>\TempState\DUMP\
+%LOCALAPPDATA%\Packages\<PackageFamilyName>\AC\TempState\DUMP\
 ```
 
 This location is used because:
 - The injected DLL runs inside the UWP sandbox
-- `TempState` is one of the few folders a sandboxed app can write to
+- `AC\TempState` (Application Container TempState) is one of the few folders a sandboxed app can write to
 - It's also accessible from outside the sandbox
 
 Use `--output` to copy files to a custom location after dumping.
