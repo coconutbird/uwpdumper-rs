@@ -1,97 +1,126 @@
-# UWPDumper-RS
+# uwpdumper-rs
 
-<div align="center">
-
-[![Build Status](https://github.com/coconutbird/uwpdumper-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/coconutbird/uwpdumper-rs/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/coconutbird/uwpdumper-rs?include_prereleases)](https://github.com/coconutbird/uwpdumper-rs/releases)
+[![CI](https://github.com/coconutbird/uwpdumper-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/coconutbird/uwpdumper-rs/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/coconutbird/uwpdumper-rs)](https://github.com/coconutbird/uwpdumper-rs/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-blue.svg)](https://www.rust-lang.org)
-[![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-blue.svg)](https://www.microsoft.com/windows)
+[![Platform: Windows](https://img.shields.io/badge/Platform-Windows-blue.svg)](https://github.com/coconutbird/uwpdumper-rs)
 
-**A modern Rust implementation of UWPDumper for extracting files from sandboxed UWP applications.**
+A modern Rust implementation of UWPDumper for extracting files from sandboxed UWP (Universal Windows Platform) applications on Windows.
 
-[Features](#features) • [Installation](#installation) • [Usage](#usage) • [How It Works](#how-it-works) • [License](#license)
+## Overview
 
-</div>
+UWP applications (including Xbox Game Pass games) run in a sandboxed environment that restricts file access. **uwpdumper-rs** solves this by injecting a DLL into UWP processes that copies files from inside the sandbox to an accessible location.
 
----
+**Key concept:** The tool injects into a running UWP process, gains access to the sandboxed package files, and copies them to the app's `TempState` folder (which is accessible from outside the sandbox).
 
 ## Features
 
-- **DLL Injection** — Injects into UWP processes to access sandboxed files
-- **Parallel Extraction** — Multi-threaded file copying with rayon
-- **Package Management** — List, launch, and dump UWP packages directly
-- **Real-time Progress** — Live progress bar with file counts
-- **Disk Space Validation** — Checks available space before dumping
-- **Long Path Support** — Handles paths exceeding 260 characters
-- **Error Recovery** — Logs failed files and continues extraction
+- 🎮 **Launch & Dump** - Launch UWP apps and dump their files automatically
+- 💉 **Process Injection** - Inject into running UWP processes by name or PID
+- 📦 **Package Discovery** - List and search installed UWP packages
+- 📊 **Real-time Progress** - Live progress bar with file counts
+- ⚡ **Parallel Extraction** - Multi-threaded file copying with rayon
+- 💾 **Disk Space Check** - Validates available space before dumping
+- 📁 **Long Path Support** - Handles paths exceeding 260 characters
+- 🔄 **Error Recovery** - Logs failed files and continues extraction
+- 🔒 **UWP Compatible** - Proper ACL handling for UWP sandbox access
+
+## Quick Start
+
+1. **Download** the [latest release](https://github.com/coconutbird/uwpdumper-rs/releases/latest) and extract
+2. **Find your game's package name**: `uwpdumper --list`
+3. **Dump the package**: `uwpdumper --package YourGame`
+4. **Find your files** in: `%LOCALAPPDATA%\Packages\<PackageFamilyName>\TempState\DUMP\`
 
 ## Installation
 
-### Download Release
+### Prerequisites
 
-Download the latest release from [GitHub Releases](https://github.com/coconutbird/uwpdumper-rs/releases):
+- Windows 10/11
+- Administrator privileges (required for DLL injection)
 
-- `uwpdumper.exe` — CLI tool
-- `uwpdumper_payload.dll` — Payload DLL (must be in same directory)
+### Download
 
-### Build from Source
+Download the zip from [GitHub Releases](https://github.com/coconutbird/uwpdumper-rs/releases/latest) and extract. The zip contains:
+- `uwpdumper.exe` - CLI tool
+- `uwpdumper_payload.dll` - Injected DLL (must be in same folder as exe)
+
+### Building from Source
 
 ```bash
-git clone https://github.com/coconutbird/uwpdumper-rs.git
-cd uwpdumper-rs
 cargo build --release
 ```
 
-Binaries output to `target/release/`.
+The output binaries will be in `target/release/`.
 
 ## Usage
 
-> **Note:** Run as Administrator for DLL injection to work.
-
-### Interactive Mode
+### Launch and dump a UWP app
 
 ```bash
-uwpdumper.exe
+# First, find your game's package name
+uwpdumper --list
+
+# Launch and dump by package name (partial match works)
+uwpdumper --package HaloWars
 ```
 
-Scans for running UWP processes and prompts for selection.
-
-### Dump by Process
+### Inject into an already-running process
 
 ```bash
 # By process name
-uwpdumper.exe --name GameApp.exe
+uwpdumper --name HaloWars2_WinAppDX12Final.exe
 
 # By process ID
-uwpdumper.exe --pid 12345
+uwpdumper --pid 12345
 ```
 
-### Dump by Package
+### Interactive mode
 
 ```bash
-# List installed packages
-uwpdumper.exe --list
-
-# Launch and dump a package
-uwpdumper.exe --package Microsoft.MyGame
+# Run without arguments to see a list of running UWP processes
+uwpdumper
 ```
 
-### Custom Output
+### Custom output directory
 
 ```bash
-uwpdumper.exe --pid 12345 --output C:\Dumps\MyGame
+# Copy dumped files to a custom location
+uwpdumper --package HaloWars --output C:\Dumps\HaloWars
 ```
 
-By default, files are dumped to the app's `TempState\DUMP` folder.
+## Output Location
 
-## How It Works
+By default, files are dumped to:
 
-UWP apps run in a sandbox with restricted filesystem access. UWPDumper-RS bypasses this by:
+```
+%LOCALAPPDATA%\Packages\<PackageFamilyName>\TempState\DUMP\
+```
 
-1. **Injecting a DLL** into the target UWP process
-2. **Communicating via shared memory** using a ring buffer IPC protocol
-3. **Copying files** from inside the sandbox to an accessible location (`TempState`)
+This location is used because:
+- The injected DLL runs inside the UWP sandbox
+- `TempState` is one of the few folders a sandboxed app can write to
+- It's also accessible from outside the sandbox
+
+Use `--output` to copy files to a custom location after dumping.
+
+## Architecture
+
+The project consists of three crates:
+
+| Crate              | Description                                    |
+|--------------------|------------------------------------------------|
+| `uwpdumper-cli`    | Command-line interface for launching/injecting |
+| `uwpdumper-payload`| DLL injected into target processes             |
+| `uwpdumper-shared` | Shared IPC protocol and message types          |
+
+### How it works
+
+1. **CLI** creates shared memory with proper ACLs for UWP sandbox access
+2. **CLI** injects the payload DLL into the target process
+3. **DLL** scans the package directory and copies files to `TempState\DUMP`
+4. **IPC** communicates progress and status between CLI and DLL via ring buffer
+5. **CLI** optionally copies files to a custom output directory
 
 ```
 ┌─────────────────┐         IPC          ┌─────────────────┐
@@ -104,23 +133,24 @@ UWP apps run in a sandbox with restricted filesystem access. UWPDumper-RS bypass
    & Progress                            → TempState/DUMP
 ```
 
-### Project Structure
+## CLI Options
 
-```
-crates/
-├── uwpdumper-cli/      # CLI injector
-├── uwpdumper-payload/  # Injected DLL
-└── uwpdumper-shared/   # IPC protocol
-```
-
-## Requirements
-
-| Requirement | Details |
-|-------------|---------|
-| **OS** | Windows 10/11 (64-bit) |
-| **Rust** | 1.85+ (Rust 2024 edition) |
-| **Privileges** | Administrator |
+| Option              | Description                              |
+|---------------------|------------------------------------------|
+| `-n, --name <NAME>` | Process name to inject into              |
+| `-p, --pid <PID>`   | Process ID to inject into                |
+| `-l, --list`        | List all installed UWP packages          |
+| `--package <NAME>`  | Package name to launch and dump          |
+| `-o, --output <DIR>`| Custom output directory for dumped files |
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT License - see [LICENSE](LICENSE) for details.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit issues and pull requests.
+
+## Disclaimer
+
+This tool is intended for legitimate purposes such as backup and modding. Use responsibly and in accordance with the terms of service of the applications you dump.
