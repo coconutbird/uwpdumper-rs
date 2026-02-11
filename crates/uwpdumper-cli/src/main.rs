@@ -198,11 +198,15 @@ fn launch_and_dump(pkg_name: &str, output_path: Option<&str>) {
 
     println!("{} Launched with PID: {}", "[OK]".green(), pid);
 
-    // Give the app a moment to initialize
-    println!("{} Waiting for app to initialize...", "[INFO]".blue());
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // Immediately suspend the process before it can do anything
+    println!("{} Suspending process...", "[INFO]".blue());
+    if let Err(e) = inject::suspend_process(pid) {
+        eprintln!("{} Failed to suspend process: {}", "[ERROR]".red(), e);
+        return;
+    }
+    println!("{} Process suspended", "[OK]".green());
 
-    // Now inject and dump using the existing flow
+    // Now inject and dump while suspended
     let dll_path = match get_dll_path() {
         Some(p) => p,
         None => return,

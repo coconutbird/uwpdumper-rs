@@ -56,16 +56,10 @@ impl CurrentPackage {
 }
 
 /// Get the TempState folder path for the current package
+/// `C:\Users\<user>\AppData\Local\Packages\<PackageFamilyName>\TempState`
 pub fn get_temp_state_path() -> Result<PathBuf> {
     let local_app_data = get_local_app_data_path()?;
-    let family_name: String = get_package_string!(GetCurrentPackageFamilyName)?;
-
-    let path = local_app_data
-        .join("Packages")
-        .join(&family_name)
-        .join("TempState");
-
-    Ok(path)
+    Ok(local_app_data.join("TempState"))
 }
 
 /// Get the LocalAppData folder path using Shell API

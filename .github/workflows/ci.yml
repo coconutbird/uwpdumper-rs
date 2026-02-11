@@ -63,5 +63,5 @@ jobs:
           name: uwpdumper-rs
           path: |
             target/release/uwpdumper.exe
-            target/release/uwpdumper_dll.dll
+            target/release/uwpdumper_payload.dll
 

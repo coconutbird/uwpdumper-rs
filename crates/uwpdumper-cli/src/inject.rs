@@ -13,10 +13,46 @@ use windows::Win32::System::Memory::{
 };
 use windows::Win32::System::Threading::{
     CreateRemoteThread, GetExitCodeThread, OpenProcess, PROCESS_CREATE_THREAD,
-    PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_VM_OPERATION, PROCESS_VM_READ,
-    PROCESS_VM_WRITE, WaitForSingleObject,
+    PROCESS_QUERY_INFORMATION, PROCESS_SUSPEND_RESUME, PROCESS_SYNCHRONIZE, PROCESS_VM_OPERATION,
+    PROCESS_VM_READ, PROCESS_VM_WRITE, WaitForSingleObject,
 };
 use windows::core::{Error, Result, s, w};
+
+// Undocumented ntdll function types
+type NtSuspendProcessFn = unsafe extern "system" fn(HANDLE) -> i32;
+type NtResumeProcessFn = unsafe extern "system" fn(HANDLE) -> i32;
+
+/// Get NtSuspendProcess and NtResumeProcess from ntdll
+fn get_nt_suspend_resume() -> Option<(NtSuspendProcessFn, NtResumeProcessFn)> {
+    // Type returned by GetProcAddress
+    type FarProc = unsafe extern "system" fn() -> isize;
+
+    unsafe {
+        let ntdll = GetModuleHandleW(w!("ntdll.dll")).ok()?;
+        let suspend = GetProcAddress(ntdll, s!("NtSuspendProcess"))?;
+        let resume = GetProcAddress(ntdll, s!("NtResumeProcess"))?;
+        Some((
+            std::mem::transmute::<FarProc, NtSuspendProcessFn>(suspend),
+            std::mem::transmute::<FarProc, NtResumeProcessFn>(resume),
+        ))
+    }
+}
+
+/// Suspend a process by PID using NtSuspendProcess
+pub fn suspend_process(pid: u32) -> Result<()> {
+    let (suspend_fn, _) = get_nt_suspend_resume().ok_or_else(Error::from_win32)?;
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_SUSPEND_RESUME, false, pid)?;
+        let status = suspend_fn(handle);
+        CloseHandle(handle)?;
+
+        if status != 0 {
+            return Err(Error::from_win32());
+        }
+    }
+    Ok(())
+}
 
 /// Handle to a target process that auto-closes on drop
 pub struct ProcessHandle(HANDLE);
