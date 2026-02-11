@@ -1,6 +1,7 @@
 //! DLL injection using LoadLibrary
 
 use std::ffi::c_void;
+use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_MOD_NOT_FOUND, ERROR_TIMEOUT, GetLastError, HANDLE, WAIT_OBJECT_0,
@@ -12,7 +13,7 @@ use windows::Win32::System::Memory::{
     MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx,
 };
 use windows::Win32::System::Threading::{
-    CreateRemoteThread, GetExitCodeThread, OpenProcess, PROCESS_CREATE_THREAD,
+    CreateRemoteThread, GetExitCodeThread, IsWow64Process, OpenProcess, PROCESS_CREATE_THREAD,
     PROCESS_QUERY_INFORMATION, PROCESS_SUSPEND_RESUME, PROCESS_SYNCHRONIZE, PROCESS_VM_OPERATION,
     PROCESS_VM_READ, PROCESS_VM_WRITE, WaitForSingleObject,
 };
@@ -54,6 +55,35 @@ pub fn suspend_process(pid: u32) -> Result<()> {
     Ok(())
 }
 
+/// Resume a process by PID using NtResumeProcess
+pub fn resume_process(pid: u32) -> Result<()> {
+    let (_, resume_fn) = get_nt_suspend_resume().ok_or_else(Error::from_win32)?;
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_SUSPEND_RESUME, false, pid)?;
+        let status = resume_fn(handle);
+        CloseHandle(handle)?;
+
+        if status != 0 {
+            return Err(Error::from_win32());
+        }
+    }
+    Ok(())
+}
+
+/// Check if a process is 32-bit (WOW64)
+/// Returns Ok(true) if 32-bit, Ok(false) if 64-bit, Err if check failed
+pub fn is_process_32bit(pid: u32) -> Result<bool> {
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_INFORMATION, false, pid)?;
+        let mut is_wow64 = windows::core::BOOL::default();
+        let result = IsWow64Process(handle, &mut is_wow64);
+        CloseHandle(handle)?;
+        result?;
+        Ok(is_wow64.as_bool())
+    }
+}
+
 /// Handle to a target process that auto-closes on drop
 pub struct ProcessHandle(HANDLE);
 
@@ -81,9 +111,10 @@ pub fn inject_dll(pid: u32, dll_path: &Path) -> Result<ProcessHandle> {
     // Set ACL on DLL for UWP access
     set_uwp_acl(dll_path)?;
 
-    let dll_path_str = dll_path.to_string_lossy();
-    let dll_path_wide: Vec<u16> = dll_path_str
-        .encode_utf16()
+    // Convert path to UTF-16 properly (preserves non-ASCII characters)
+    let dll_path_wide: Vec<u16> = dll_path
+        .as_os_str()
+        .encode_wide()
         .chain(std::iter::once(0))
         .collect();
     let dll_path_bytes = dll_path_wide.len() * 2;

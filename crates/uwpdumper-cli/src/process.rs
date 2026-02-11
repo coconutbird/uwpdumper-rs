@@ -82,8 +82,15 @@ fn is_uwp_process(pid: u32) -> bool {
         }
 
         let path = String::from_utf16_lossy(&buffer[..size as usize]);
+        let path_lower = path.to_lowercase();
 
-        // UWP apps are typically in WindowsApps folder
-        path.contains("WindowsApps") || path.contains("\\AppData\\Local\\Packages\\")
+        // UWP/MSIX apps are typically in these locations:
+        // 1. WindowsApps folder (case insensitive check)
+        // 2. Packages folder in AppData/Local
+        // 3. WpSystem folder (for some Microsoft apps)
+        path_lower.contains("windowsapps")
+            || path_lower.contains("\\appdata\\local\\packages\\")
+            || path_lower.contains("\\wpsystem\\")
+            || path_lower.contains("\\microsoft.windows")
     }
 }

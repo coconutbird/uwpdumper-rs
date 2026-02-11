@@ -209,13 +209,120 @@ fn launch_and_dump(pkg_name: &str, output_path: Option<&str>) {
     // Now inject and dump while suspended
     let dll_path = match get_dll_path() {
         Some(p) => p,
-        None => return,
+        None => {
+            // Resume process before returning on error
+            let _ = inject::resume_process(pid);
+            return;
+        }
     };
 
-    inject_and_dump(pid, &dll_path, output_path);
+    inject_and_dump_suspended(pid, &dll_path, output_path);
+}
+
+/// Inject and dump a suspended process, resuming it on failure
+fn inject_and_dump_suspended(pid: u32, dll_path: &std::path::Path, output_path: Option<&str>) {
+    // Helper to resume process on early return
+    let resume_on_error = || {
+        if let Err(e) = inject::resume_process(pid) {
+            eprintln!("{} Failed to resume process: {}", "[WARN]".yellow(), e);
+        } else {
+            println!("{} Process resumed", "[INFO]".blue());
+        }
+    };
+
+    // Set up IPC
+    println!("{} Setting up IPC...", "[INFO]".blue());
+    let mut ipc = match IpcHost::create(pid) {
+        Ok(ipc) => ipc,
+        Err(e) => {
+            eprintln!("{} Failed to create IPC: {}", "[ERROR]".red(), e);
+            resume_on_error();
+            return;
+        }
+    };
+
+    // Inject DLL
+    println!("{} Injecting DLL...", "[INFO]".blue());
+    let process = match inject::inject_dll(pid, dll_path) {
+        Ok(handle) => handle,
+        Err(e) => {
+            eprintln!("{} Injection failed: {}", "[ERROR]".red(), e);
+            resume_on_error();
+            return;
+        }
+    };
+
+    println!(
+        "{} DLL injected, waiting for ready signal...",
+        "[OK]".green()
+    );
+
+    // Wait for ready signal
+    let mut ready = false;
+    for _ in 0..500 {
+        if !process.is_alive() {
+            eprintln!(
+                "{} Target process crashed during initialization",
+                "[ERROR]".red()
+            );
+            return; // Process is dead, no need to resume
+        }
+        if let Some(pkt) = ipc.try_read()
+            && pkt.id() == PacketId::Ready
+        {
+            ready = true;
+            break;
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    if !ready {
+        eprintln!("{} Timeout waiting for DLL ready signal", "[ERROR]".red());
+        resume_on_error();
+        return;
+    }
+
+    // Start dump and run message loop
+    println!("{} Starting dump...\n", "[INFO]".blue());
+
+    ipc.start_dump();
+
+    let dump_path = run_message_loop(&mut ipc, &process);
+
+    // If custom output path was specified, copy files from TempState to destination
+    if let (Some(output), Some(source)) = (output_path, dump_path) {
+        copy_to_output(&source, output);
+    }
+
+    println!();
 }
 
 fn inject_and_dump(pid: u32, dll_path: &std::path::Path, output_path: Option<&str>) {
+    // Check if process is 32-bit (we only support 64-bit)
+    match inject::is_process_32bit(pid) {
+        Ok(true) => {
+            eprintln!(
+                "{} Target process is 32-bit. This tool only supports 64-bit processes.",
+                "[ERROR]".red()
+            );
+            eprintln!(
+                "{} You need a 32-bit build of the injector and payload DLL.",
+                "[INFO]".blue()
+            );
+            return;
+        }
+        Ok(false) => {} // 64-bit, continue
+        Err(e) => {
+            eprintln!(
+                "{} Warning: Could not determine process architecture: {}",
+                "[WARN]".yellow(),
+                e
+            );
+            // Continue anyway, injection will fail if architecture mismatch
+        }
+    }
+
     // Set up IPC
     println!("{} Setting up IPC...", "[INFO]".blue());
     let mut ipc = match IpcHost::create(pid) {
@@ -336,15 +443,16 @@ fn copy_to_output(source: &str, dest: &str) {
         file_count
     );
 
-    let copied = AtomicU32::new(0);
-    let errors = AtomicU32::new(0);
-    let processed = AtomicU32::new(0);
+    use std::sync::Arc;
+
+    let copied = Arc::new(AtomicU32::new(0));
+    let errors = Arc::new(AtomicU32::new(0));
+    let processed = Arc::new(AtomicU32::new(0));
 
     // Spawn progress display thread
     let total = file_count as u32;
-    let processed_ref = &processed;
     let progress_handle = std::thread::spawn({
-        let processed = unsafe { &*(processed_ref as *const AtomicU32) };
+        let processed = Arc::clone(&processed);
         move || {
             let mut last_percent = 0;
             loop {

@@ -5,7 +5,44 @@ use windows::Win32::System::Com::{
     CLSCTX_LOCAL_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
 };
 use windows::Win32::UI::Shell::{ACTIVATEOPTIONS, IApplicationActivationManager};
-use windows::core::{GUID, Result};
+use windows::core::{GUID, HRESULT};
+
+/// Error type for package operations
+#[derive(Debug)]
+pub enum PackageError {
+    /// PowerShell is not available or failed to execute
+    PowerShellUnavailable(String),
+    /// PowerShell command failed with an error
+    PowerShellFailed(String),
+    /// Windows API error
+    WindowsError(windows::core::Error),
+}
+
+impl std::fmt::Display for PackageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PackageError::PowerShellUnavailable(msg) => {
+                write!(
+                    f,
+                    "PowerShell unavailable: {}. Try running UWP processes manually and use --pid or --name instead.",
+                    msg
+                )
+            }
+            PackageError::PowerShellFailed(msg) => {
+                write!(f, "PowerShell command failed: {}", msg)
+            }
+            PackageError::WindowsError(e) => write!(f, "Windows error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for PackageError {}
+
+impl From<windows::core::Error> for PackageError {
+    fn from(e: windows::core::Error) -> Self {
+        PackageError::WindowsError(e)
+    }
+}
 
 /// Information about an installed UWP package
 #[derive(Debug, Clone)]
@@ -17,7 +54,7 @@ pub struct InstalledPackage {
 }
 
 /// List all installed UWP packages
-pub fn list_packages() -> Result<Vec<InstalledPackage>> {
+pub fn list_packages() -> Result<Vec<InstalledPackage>, PackageError> {
     // Use PowerShell to enumerate packages with display names and app IDs from manifest
     let output = Command::new("powershell")
         .args([
@@ -35,10 +72,16 @@ pub fn list_packages() -> Result<Vec<InstalledPackage>> {
             }"#,
         ])
         .output()
-        .map_err(|_| windows::core::Error::from_win32())?;
+        .map_err(|e| PackageError::PowerShellUnavailable(e.to_string()))?;
 
     if !output.status.success() {
-        return Ok(Vec::new());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("is not recognized") || stderr.contains("not found") {
+            return Err(PackageError::PowerShellUnavailable(
+                "PowerShell is not in PATH".to_string(),
+            ));
+        }
+        return Err(PackageError::PowerShellFailed(stderr.to_string()));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -60,7 +103,7 @@ pub fn list_packages() -> Result<Vec<InstalledPackage>> {
 }
 
 /// Find a package by name (partial match, case-insensitive)
-pub fn find_package(name: &str) -> Result<Option<InstalledPackage>> {
+pub fn find_package(name: &str) -> Result<Option<InstalledPackage>, PackageError> {
     let packages = list_packages()?;
     let name_lower = name.to_lowercase();
     Ok(packages
@@ -73,9 +116,16 @@ const CLSID_APPLICATION_ACTIVATION_MANAGER: GUID =
     GUID::from_u128(0x45BA127D_10A8_46EA_8AB7_56EA9078943C);
 
 /// Launch a UWP app and return its process ID
-pub fn launch_package(pkg: &InstalledPackage) -> Result<u32> {
+pub fn launch_package(pkg: &InstalledPackage) -> Result<u32, PackageError> {
     unsafe {
-        CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+        CoInitializeEx(None, COINIT_MULTITHREADED)
+            .ok()
+            .map_err(|e| {
+                PackageError::WindowsError(windows::core::Error::new(
+                    HRESULT(e.code().0),
+                    e.message(),
+                ))
+            })?;
 
         let aam: IApplicationActivationManager = CoCreateInstance(
             &CLSID_APPLICATION_ACTIVATION_MANAGER,

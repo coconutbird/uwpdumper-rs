@@ -9,7 +9,9 @@ use crate::messages::PacketId;
 use crate::messages::{HEADER_SIZE, LogLevel, MAX_PAYLOAD_SIZE, Packet, PacketHeader};
 use crate::{MAGIC, SHARED_MEMORY_NAME_PREFIX, SHARED_MEMORY_SIZE};
 use std::sync::atomic::{AtomicU32, Ordering};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HLOCAL, LocalFree,
+};
 use windows::Win32::Security::Authorization::{
     ConvertStringSidToSidW, EXPLICIT_ACCESS_W, SET_ACCESS, SetEntriesInAclW, TRUSTEE_FORM,
     TRUSTEE_TYPE, TRUSTEE_W,
@@ -22,7 +24,7 @@ use windows::Win32::System::Memory::{
     CreateFileMappingW, FILE_MAP_ALL_ACCESS, FILE_MAP_READ, FILE_MAP_WRITE,
     MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
 };
-use windows::core::{Error, PCWSTR, Result, w};
+use windows::core::{Error, HRESULT, PCWSTR, Result, w};
 /// Size of the shared header (64 bytes core + reserved padding = 1024)
 pub const SHARED_HEADER_SIZE: usize = 1024;
 
@@ -163,6 +165,15 @@ impl IpcHost {
             let _ = LocalFree(Some(std::mem::transmute::<PSID, HLOCAL>(sid_everyone)));
 
             let handle = handle?;
+
+            // Check if the mapping already existed (indicates duplicate dump attempt)
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                CloseHandle(handle)?;
+                return Err(Error::new(
+                    HRESULT(ERROR_ALREADY_EXISTS.0 as i32),
+                    "An IPC session already exists for this process. Another dump may be in progress.",
+                ));
+            }
 
             let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, SHARED_MEMORY_SIZE);
             if view.Value.is_null() {
@@ -371,10 +382,37 @@ impl IpcClient {
         self.header_mut().finished.store(1, Ordering::SeqCst);
     }
 
+    /// Calculate available space in ring buffer
+    fn available_space(&self) -> usize {
+        let header = self.header();
+        let write_off = header.write_offset.load(Ordering::Acquire) as usize;
+        let read_off = header.read_offset.load(Ordering::Acquire) as usize;
+
+        if write_off >= read_off {
+            // Available = buffer size - (write - read) - 1 (reserve 1 byte to distinguish full from empty)
+            RING_BUFFER_SIZE - (write_off - read_off) - 1
+        } else {
+            // Read is ahead of write (wrapped)
+            read_off - write_off - 1
+        }
+    }
+
     /// Push a packet to the ring buffer
+    /// Waits if buffer is full (with timeout to prevent deadlock)
     pub fn push_packet(&mut self, packet: Packet) {
         let bytes = packet.to_bytes();
         let total_size = bytes.len();
+
+        // Wait for space with timeout (max 5 seconds)
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(5);
+        while self.available_space() < total_size {
+            if start.elapsed() > timeout {
+                // Buffer full and CLI not reading - drop packet to prevent deadlock
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
 
         let write_off = self.header().write_offset.load(Ordering::Acquire) as usize;
         let ring = self.ring_buffer_mut();
@@ -417,15 +455,28 @@ impl IpcClient {
         header.progress_total.store(total, Ordering::Relaxed);
     }
 
-    /// Request sync and wait for CLI to acknowledge
+    /// Request sync and wait for CLI to acknowledge (with timeout)
     /// This ensures CLI has polled the current progress before continuing
-    pub fn sync(&self) {
+    /// Returns true if sync was acknowledged, false if timeout occurred
+    pub fn sync(&self) -> bool {
+        self.sync_with_timeout(std::time::Duration::from_secs(5))
+    }
+
+    /// Request sync with custom timeout
+    /// Returns true if sync was acknowledged, false if timeout occurred
+    pub fn sync_with_timeout(&self, timeout: std::time::Duration) -> bool {
         let header = self.header();
         let new_val = header.sync_request.fetch_add(1, Ordering::Release) + 1;
-        // Spin until CLI acknowledges
+
+        let start = std::time::Instant::now();
         while header.sync_ack.load(Ordering::Acquire) != new_val {
-            std::hint::spin_loop();
+            if start.elapsed() > timeout {
+                return false; // Timeout - CLI may have crashed
+            }
+            // Sleep briefly to avoid burning CPU
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        true
     }
 }
 
@@ -660,10 +711,11 @@ mod tests {
         let sync_completed = Arc::new(AtomicBool::new(false));
         let sync_completed_clone = sync_completed.clone();
 
-        // Spawn thread that will call sync
+        // Spawn thread that will call sync with longer timeout
         let sync_thread = std::thread::spawn(move || {
-            client.sync();
+            let result = client.sync_with_timeout(std::time::Duration::from_secs(10));
             sync_completed_clone.store(true, Ordering::SeqCst);
+            result
         });
 
         // Wait a bit - sync should NOT complete yet
@@ -677,10 +729,34 @@ mod tests {
         host.check_and_ack_sync();
 
         // Wait for thread to complete
-        sync_thread.join().unwrap();
+        let result = sync_thread.join().unwrap();
+        assert!(result, "sync should succeed after ack");
         assert!(
             sync_completed.load(Ordering::SeqCst),
             "sync should complete after ack"
+        );
+    }
+
+    #[test]
+    fn test_ipc_sync_timeout() {
+        let pid = unique_pid();
+
+        let _host = IpcHost::create(pid).expect("Failed to create IPC host");
+        let client = IpcClient::open(pid).expect("Failed to open IPC client");
+
+        // Sync with very short timeout - should fail since no one is acknowledging
+        let start = std::time::Instant::now();
+        let result = client.sync_with_timeout(std::time::Duration::from_millis(100));
+        let elapsed = start.elapsed();
+
+        assert!(!result, "sync should timeout without ack");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(100),
+            "should wait at least the timeout duration"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "should not wait much longer than timeout"
         );
     }
 }
