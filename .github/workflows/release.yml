@@ -65,5 +65,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          files: uwpdumper-rs-${{ steps.tag.outputs.tag }}.zip
+          files: uwpdumper-${{ steps.tag.outputs.tag }}.zip
           generate_release_notes: true
